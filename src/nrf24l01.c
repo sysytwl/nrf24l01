@@ -109,10 +109,8 @@ static void nrf24l01_ce_low(nrf24l01_t *dev) {
     }
 }
 
-esp_err_t nrf24l01_init(nrf24l01_t *dev, spi_host_device_t host, int clk_speed,
-                        gpio_num_t cs_pin, gpio_num_t ce_pin, gpio_num_t irq_pin) {
+esp_err_t nrf24l01_init(nrf24l01_t *dev, spi_host_device_t host, int clk_speed, gpio_num_t cs_pin, gpio_num_t ce_pin, gpio_num_t irq_pin) {
     esp_err_t ret;
-    memset(dev, 0, sizeof(nrf24l01_t));
     dev->ce_pin = ce_pin;
     dev->irq_pin = irq_pin;
 
@@ -142,20 +140,6 @@ esp_err_t nrf24l01_init(nrf24l01_t *dev, spi_host_device_t host, int clk_speed,
         ret = gpio_config(&io_conf);
         if (ret != ESP_OK) return ret;
     }
-
-    // 添加SPI设备
-    spi_device_interface_config_t devcfg = {
-        .mode = 0,                  // CPOL=0, CPHA=0
-        .clock_speed_hz = clk_speed,
-        .spics_io_num = cs_pin,
-        .queue_size = 7,
-        .flags = SPI_DEVICE_HALFDUPLEX, // nRF24L01+ 使用半双工，但这里仅用MOSI+MISO同时传输命令字节，后续可能半双工优化，简单起见使用全双工模式，但nRF24L01+实际上支持全双工SPI读写
-    };
-    ret = spi_bus_add_device(host, &devcfg, &dev->spi);
-    if (ret != ESP_OK) return ret;
-
-    // 延时，确保芯片上电稳定
-    vTaskDelay(pdMS_TO_TICKS(100));
 
     // 读取状态寄存器，验证通信
     uint8_t status;
@@ -510,4 +494,15 @@ void nrf24l01_dump_registers(nrf24l01_t *dev) {
             ESP_LOGI(TAG, "0x%02X %-12s = 0x%02X", i, reg_names[i], val);
         }
     }
+}
+
+bool nrf24l01_test_rpd(nrf24l01_t *dev) {
+    uint8_t rpd_val = 0;
+    esp_err_t ret = nrf24l01_read_register(dev, NRF24_REG_RPD, &rpd_val);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read RPD register");
+        return false;
+    }
+    // 根据数据手册，RPD 位于 bit 0
+    return (rpd_val & 0x01) ? true : false;
 }

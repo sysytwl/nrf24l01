@@ -58,6 +58,7 @@ extern "C" {
 #define NRF24_CONFIG_MASK_MAX_RT (1<<4)
 #define NRF24_CONFIG_MASK_TX_DS (1<<5)
 #define NRF24_CONFIG_MASK_RX_DR (1<<6)
+#define NRF24_REG_RPD         0x09
 
 // 状态寄存器位
 #define NRF24_STATUS_TX_FULL    (1<<0)
@@ -352,6 +353,15 @@ esp_err_t nrf24l01_power_down(nrf24l01_t *dev);
  * @param dev 设备句柄
  */
 void nrf24l01_dump_registers(nrf24l01_t *dev);
+
+/**
+ * @brief 检测接收功率（RPD），判断信号强度是否高于 -64dBm
+ *
+ * @param dev 设备句柄
+ * @return true 检测到信号强度 > -64dBm
+ * @return false 未检测到信号或信号强度 < -64dBm
+ */
+bool nrf24l01_test_rpd(nrf24l01_t *dev);
 
 #ifdef __cplusplus
 }
