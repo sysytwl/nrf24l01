@@ -194,7 +194,8 @@ esp_err_t nrf24l01_init(nrf24l01_t *dev, gpio_num_t ce_pin, gpio_num_t irq_pin) 
     }
 
     // 启用管道0和1的自动应答
-    nrf24l01_write_register(dev, NRF24_REG_EN_AA, 0x03); // 启用管道0和1的自动应答
+    nrf24l01_enable_auto_ack(dev, 0, true);
+    nrf24l01_enable_auto_ack(dev, 1, true);
 
     // 关闭动态载荷功能（默认）
     //nrf24l01_write_register(dev, NRF24_REG_DYNPD, 0);
@@ -450,45 +451,11 @@ bool nrf24l01_data_ready(nrf24l01_t *dev, uint8_t *pipe) {
 }
 
 esp_err_t nrf24l01_receive(nrf24l01_t *dev, uint8_t *data, size_t *len, uint8_t *pipe) {
-    if (!nrf24l01_data_ready(dev, pipe)) {
-        return ESP_ERR_NOT_FOUND;
-    }
-
-    // 确定有效载荷长度
-    uint8_t payload_len = 32; // 默认最大长度
-    uint8_t pipe_num = (nrf24l01_get_status(dev) & NRF24_STATUS_RX_P_NO) >> 1;
-    
-    if (pipe_num <= 5) {
-        uint8_t width_reg;
-        esp_err_t ret = nrf24l01_read_register(dev, NRF24_REG_RX_PW_P0 + pipe_num, &width_reg);
-        if (ret == ESP_OK) {
-            payload_len = width_reg > 32 ? 32 : width_reg;
-        }
-    }
+    nrf24l01_read_register(dev, NRF24_REG_RX_PW_P0 + *pipe, (uint8_t*)len);
 
     // 读取载荷
     uint8_t cmd = NRF24_CMD_R_RX_PAYLOAD;
-    uint8_t *rx_buf = malloc(1 + payload_len);
-    if (!rx_buf) return ESP_ERR_NO_MEM;
-    uint8_t *tx_buf = malloc(1 + payload_len);
-    if (!tx_buf) {
-        free(rx_buf);
-        return ESP_ERR_NO_MEM;
-    }
-    tx_buf[0] = cmd;
-    memset(tx_buf + 1, NRF24_CMD_NOP, payload_len);
-    spi_transaction_t t = {
-        .length = (1 + payload_len) * 8,
-        .tx_buffer = tx_buf,
-        .rx_buffer = rx_buf,
-    };
-    esp_err_t ret = spi_device_transmit(dev->spi, &t);
-    if (ret == ESP_OK) {
-        memcpy(data, rx_buf + 1, payload_len);
-        *len = payload_len;
-    }
-    free(tx_buf);
-    free(rx_buf);
+    esp_err_t ret = nrf24l01_read_register_multi(dev, cmd, data, *len);
 
     // 清除RX_DR中断
     nrf24l01_clear_irq(dev, NRF24_STATUS_RX_DR);
