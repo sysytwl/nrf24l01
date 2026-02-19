@@ -496,21 +496,15 @@ esp_err_t nrf24l01_receive(nrf24l01_t *dev, uint8_t *data, size_t *len, uint8_t 
 
 uint8_t nrf24l01_get_status(nrf24l01_t *dev) {
     uint8_t cmd = NRF24_CMD_NOP;
-    uint8_t rx_data = 0;  // 申请2字节以防止溢出
+    uint8_t rx_data;
     spi_transaction_t t = {
         .length = 8,
         .tx_buffer = &cmd,
         .rx_buffer = &rx_data,
-        .flags = SPI_TRANS_USE_RXDATA,
+        //.flags = SPI_TRANS_USE_RXDATA,
     };
-    
-    esp_err_t ret = spi_device_transmit(dev->spi, &t);
-    if (ret == ESP_OK) {
-        return rx_data;  // 返回接收到的状态字节
-    } else {
-        ESP_LOGE(TAG, "Failed to get status, error: 0x%x", ret);
-        return 0xFF;  // 返回错误状态
-    }
+    spi_device_transmit(dev->spi, &t);
+    return rx_data;  // 返回接收到的状态字节
 }
 
 void nrf24l01_clear_irq(nrf24l01_t *dev, uint8_t flags) {
