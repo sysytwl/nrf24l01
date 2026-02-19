@@ -7,12 +7,12 @@
 
 // SPI引脚配置（根据实际接线修改） 
 #define PIN_CS           GPIO_NUM_15
-#define PIN_CE           GPIO_NUM_2  // 修改：使用实际的GPIO引脚而不是NC
+#define PIN_CE           GPIO_NUM_23  // 修改：使用实际的GPIO引脚而不是NC
 #define PIN_IRQ          GPIO_NUM_NC  // 不使用可设为-1
 
 // 地址示例（5字节，LSB先发送）
 static const uint8_t tx_addr[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
-static const uint8_t rx_addr[5] = {0x00, 0x00, 0x00, 0x00, 0x01};
+static const uint8_t rx_addr[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
 
 nrf24l01_t nrf;
 
@@ -64,20 +64,15 @@ void nrf_tx_init(void) {
 
 void nrf_tx(uint8_t *data){
     // 创建要发送的数据
-    uint8_t send_data[32];
+    uint8_t send_data[20];
     strcpy((char*)send_data, "Hello nRF24L01+!");
     
-    esp_err_t ret = nrf24l01_send(&nrf, send_data, strlen((char*)send_data) + 1, 2000);
-    if (ret == ESP_OK) {
-        ESP_LOGI("nrf_tx", "Send OK");
-    } else {
-        ESP_LOGE("nrf_tx", "Send failed, error: 0x%x", ret);
-        
-        // 检查状态寄存器
-        uint8_t status = nrf24l01_get_status(&nrf);
-        ESP_LOGI("nrf_tx", "Status register after send: 0x%02x", status);
-        
+    esp_err_t ret;
+    do {
+        ret = nrf24l01_send(&nrf, send_data, 32, 1000);
+
         // 清除中断标志
-        nrf24l01_clear_irq(&nrf, 0xFF);
-    }
+        //nrf24l01_clear_irq(&nrf, 0xFF);
+    } while (ret != ESP_OK);
+
 }

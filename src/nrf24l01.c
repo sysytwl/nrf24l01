@@ -13,7 +13,7 @@ static esp_err_t nrf24l01_write_register(nrf24l01_t *dev, uint8_t reg, uint8_t v
         .length = 2 * 8,
         .tx_buffer = tx_data,
         .rx_buffer = NULL,
-        .flags = SPI_TRANS_USE_TXDATA,
+        //.flags = SPI_TRANS_USE_TXDATA,
     };
     return spi_device_transmit(dev->spi, &t);
 }
@@ -42,7 +42,7 @@ static esp_err_t nrf24l01_read_register(nrf24l01_t *dev, uint8_t reg, uint8_t *v
         .length = 2 * 8,
         .tx_buffer = tx_data,
         .rx_buffer = rx_data,
-        .flags = SPI_TRANS_USE_RXDATA,
+        //.flags = SPI_TRANS_USE_RXDATA,
     };
     esp_err_t ret = spi_device_transmit(dev->spi, &t);
     if (ret == ESP_OK) {
@@ -80,7 +80,7 @@ static esp_err_t nrf24l01_write_cmd(nrf24l01_t *dev, uint8_t cmd) {
     spi_transaction_t t = {
         .length = 8,
         .tx_buffer = &cmd,
-        .flags = SPI_TRANS_USE_TXDATA,
+        //.flags = SPI_TRANS_USE_TXDATA,
     };
     return spi_device_transmit(dev->spi, &t);
 }
@@ -197,8 +197,8 @@ esp_err_t nrf24l01_init(nrf24l01_t *dev, gpio_num_t ce_pin, gpio_num_t irq_pin) 
     nrf24l01_write_register(dev, NRF24_REG_EN_AA, 0x03); // 启用管道0和1的自动应答
 
     // 关闭动态载荷功能（默认）
-    nrf24l01_write_register(dev, NRF24_REG_DYNPD, 0);
-    nrf24l01_write_register(dev, NRF24_REG_FEATURE, 0);
+    //nrf24l01_write_register(dev, NRF24_REG_DYNPD, 0);
+    //nrf24l01_write_register(dev, NRF24_REG_FEATURE, 0);
 
     ESP_LOGI(TAG, "nRF24L01+ initialized successfully");
     return ESP_OK;
@@ -401,7 +401,7 @@ esp_err_t nrf24l01_send(nrf24l01_t *dev, const uint8_t *data, size_t len, int ti
 
     // 触发发送：CE拉高 >10us
     nrf24l01_ce_high(dev);
-    esp_rom_delay_us(15); // 至少10us
+    esp_rom_delay_us(20);
     nrf24l01_ce_low(dev);
 
     // 等待发送完成或超时
@@ -411,8 +411,13 @@ esp_err_t nrf24l01_send(nrf24l01_t *dev, const uint8_t *data, size_t len, int ti
         status = nrf24l01_get_status(dev);
         
         // 检查发送完成或最大重传次数到达
-        if (status & (NRF24_STATUS_TX_DS | NRF24_STATUS_MAX_RT)) {
+        if (status & (NRF24_STATUS_TX_DS)) {
             break;
+        }
+
+        if (status & NRF24_STATUS_MAX_RT){
+            ESP_LOGW(TAG, "Max retries exceeded, status: 0x%02x", status);
+            return ESP_FAIL; // 重传超时
         }
         
         if ((xTaskGetTickCount() - start) >= pdMS_TO_TICKS(timeout_ms)) {
@@ -421,14 +426,10 @@ esp_err_t nrf24l01_send(nrf24l01_t *dev, const uint8_t *data, size_t len, int ti
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
+    nrf24l01_ce_low(dev);
 
     // 清除中断标志
     nrf24l01_clear_irq(dev, status & (NRF24_STATUS_TX_DS | NRF24_STATUS_MAX_RT));
-
-    if (status & NRF24_STATUS_MAX_RT) {
-        ESP_LOGW(TAG, "Max retries exceeded, status: 0x%02x", status);
-        return ESP_FAIL; // 重传超时
-    }
 
     if (status & NRF24_STATUS_TX_DS) {
         ESP_LOGI(TAG, "Send successful, status: 0x%02x", status);
