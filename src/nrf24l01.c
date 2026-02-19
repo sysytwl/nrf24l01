@@ -13,23 +13,23 @@ static esp_err_t nrf24l01_write_register(nrf24l01_t *dev, uint8_t reg, uint8_t v
         .length = 2 * 8,
         .tx_buffer = tx_data,
         .rx_buffer = NULL,
+        .flags = SPI_TRANS_USE_TXDATA,
     };
     return spi_device_transmit(dev->spi, &t);
 }
 
 static esp_err_t nrf24l01_write_register_multi(nrf24l01_t *dev, uint8_t reg, const uint8_t *data, size_t len) {
     uint8_t cmd = NRF24_CMD_W_REGISTER | reg;
-    spi_transaction_t t = {
-        .length = (1 + len) * 8,
-        .tx_buffer = NULL,
-        .rx_buffer = NULL,
-    };
-    // 分配临时缓冲区包含命令和数据
     uint8_t *tx_buf = malloc(1 + len);
     if (!tx_buf) return ESP_ERR_NO_MEM;
     tx_buf[0] = cmd;
     memcpy(tx_buf + 1, data, len);
-    t.tx_buffer = tx_buf;
+    
+    spi_transaction_t t = {
+        .length = (1 + len) * 8,
+        .tx_buffer = tx_buf,
+        .rx_buffer = NULL,
+    };
     esp_err_t ret = spi_device_transmit(dev->spi, &t);
     free(tx_buf);
     return ret;
@@ -42,6 +42,7 @@ static esp_err_t nrf24l01_read_register(nrf24l01_t *dev, uint8_t reg, uint8_t *v
         .length = 2 * 8,
         .tx_buffer = tx_data,
         .rx_buffer = rx_data,
+        .flags = SPI_TRANS_USE_RXDATA,
     };
     esp_err_t ret = spi_device_transmit(dev->spi, &t);
     if (ret == ESP_OK) {
@@ -79,6 +80,7 @@ static esp_err_t nrf24l01_write_cmd(nrf24l01_t *dev, uint8_t cmd) {
     spi_transaction_t t = {
         .length = 8,
         .tx_buffer = &cmd,
+        .flags = SPI_TRANS_USE_TXDATA,
     };
     return spi_device_transmit(dev->spi, &t);
 }
@@ -109,7 +111,7 @@ static void nrf24l01_ce_low(nrf24l01_t *dev) {
     }
 }
 
-esp_err_t nrf24l01_init(nrf24l01_t *dev, spi_host_device_t host, int clk_speed, gpio_num_t cs_pin, gpio_num_t ce_pin, gpio_num_t irq_pin) {
+esp_err_t nrf24l01_init(nrf24l01_t *dev, gpio_num_t ce_pin, gpio_num_t irq_pin) {
     esp_err_t ret;
     dev->ce_pin = ce_pin;
     dev->irq_pin = irq_pin;
@@ -135,25 +137,28 @@ esp_err_t nrf24l01_init(nrf24l01_t *dev, spi_host_device_t host, int clk_speed, 
             .mode = GPIO_MODE_INPUT,
             .pull_up_en = GPIO_PULLUP_ENABLE,
             .pull_down_en = GPIO_PULLDOWN_DISABLE,
-            .intr_type = GPIO_INTR_NEGEDGE, // 可根据需要选择
+            .intr_type = GPIO_INTR_NEGEDGE,
         };
         ret = gpio_config(&io_conf);
         if (ret != ESP_OK) return ret;
     }
 
+    // 等待上电稳定
+    vTaskDelay(pdMS_TO_TICKS(100));
+
     // 读取状态寄存器，验证通信
     uint8_t status;
     ret = nrf24l01_read_register(dev, NRF24_REG_STATUS, &status);
     if (ret != ESP_OK) {
-        ESP_LOGE(TAG, "Failed to read STATUS register");
+        ESP_LOGE(TAG, "Failed to read STATUS register, error: 0x%x", ret);
         return ret;
     }
-    ESP_LOGI(TAG, "STATUS = 0x%02x", status);
+    ESP_LOGI(TAG, "Initial STATUS = 0x%02x", status);
 
-    // 默认配置：关断模式，CRC使能，1字节CRC，关闭所有中断掩码
-    ret = nrf24l01_write_register(dev, NRF24_REG_CONFIG, NRF24_CONFIG_EN_CRC | NRF24_CONFIG_CRCO);
+    // 复位模块
+    ret = nrf24l01_write_register(dev, NRF24_REG_CONFIG, 0x08); // 只使能CRC
     if (ret != ESP_OK) return ret;
-
+    
     // 设置地址宽度为5字节
     ret = nrf24l01_write_register(dev, NRF24_REG_SETUP_AW, NRF24_AW_5BYTES);
     if (ret != ESP_OK) return ret;
@@ -168,8 +173,8 @@ esp_err_t nrf24l01_init(nrf24l01_t *dev, spi_host_device_t host, int clk_speed, 
     ret = nrf24l01_set_pa_level(dev, NRF24_PA_MAX);
     if (ret != ESP_OK) return ret;
 
-    // 默认自动重传：500us延时，重传3次
-    ret = nrf24l01_set_retransmit(dev, NRF24_ARD_500us, NRF24_ARC_3);
+    // 默认自动重传：500us延时，重传15次（最大）
+    ret = nrf24l01_set_retransmit(dev, NRF24_ARD_500us, NRF24_ARC_15);
     if (ret != ESP_OK) return ret;
 
     // 清空FIFO
@@ -179,21 +184,23 @@ esp_err_t nrf24l01_init(nrf24l01_t *dev, spi_host_device_t host, int clk_speed, 
     // 清空中断
     nrf24l01_clear_irq(dev, 0xFF);
 
-    // 默认接收所有管道，但关闭所有管道（先禁用）
-    ret = nrf24l01_write_register(dev, NRF24_REG_EN_RXADDR, 0);
+    // 启用接收管道0和1
+    ret = nrf24l01_write_register(dev, NRF24_REG_EN_RXADDR, 0x03); // 启用管道0和1
     if (ret != ESP_OK) return ret;
 
-    // 默认设置每个管道的有效载荷宽度为0（禁用）
-    for (int i = 0; i < NRF24_PIPE_COUNT; i++) {
-        nrf24l01_write_register(dev, NRF24_REG_RX_PW_P0 + i, 0);
+    // 设置每个管道的有效载荷宽度为32字节（最大）
+    for (int i = 0; i < 2; i++) {
+        nrf24l01_write_register(dev, NRF24_REG_RX_PW_P0 + i, 32);
     }
 
-    // 关闭自动应答和动态载荷（默认）
-    nrf24l01_write_register(dev, NRF24_REG_EN_AA, 0);
+    // 启用管道0和1的自动应答
+    nrf24l01_write_register(dev, NRF24_REG_EN_AA, 0x03); // 启用管道0和1的自动应答
+
+    // 关闭动态载荷功能（默认）
     nrf24l01_write_register(dev, NRF24_REG_DYNPD, 0);
     nrf24l01_write_register(dev, NRF24_REG_FEATURE, 0);
 
-    ESP_LOGI(TAG, "nRF24L01+ initialized");
+    ESP_LOGI(TAG, "nRF24L01+ initialized successfully");
     return ESP_OK;
 }
 
@@ -254,8 +261,38 @@ esp_err_t nrf24l01_set_rx_addr_p2_5(nrf24l01_t *dev, uint8_t pipe, uint8_t addr_
 }
 
 esp_err_t nrf24l01_set_tx_addr(nrf24l01_t *dev, const uint8_t *addr) {
+    esp_err_t ret;
+    
+    // 保存地址到本地结构体
     memcpy(dev->tx_addr, addr, NRF24_ADDR_WIDTH);
-    return nrf24l01_write_register_multi(dev, NRF24_REG_TX_ADDR, addr, NRF24_ADDR_WIDTH);
+    
+    // 写入地址到寄存器
+    ret = nrf24l01_write_register_multi(dev, NRF24_REG_TX_ADDR, addr, NRF24_ADDR_WIDTH);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write TX address to register, error: 0x%x", ret);
+        return ret;
+    }
+    
+    // 验证写入是否成功
+    uint8_t verify_addr[NRF24_ADDR_WIDTH];
+    ret = nrf24l01_read_register_multi(dev, NRF24_REG_TX_ADDR, verify_addr, NRF24_ADDR_WIDTH);
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to read back TX address for verification, error: 0x%x", ret);
+        return ret;
+    }
+    
+    // 比较写入的地址和读回的地址
+    if (memcmp(addr, verify_addr, NRF24_ADDR_WIDTH) != 0) {
+        ESP_LOGE(TAG, "TX address verification failed! Written: %02X-%02X-%02X-%02X-%02X, Read back: %02X-%02X-%02X-%02X-%02X",
+                 addr[0], addr[1], addr[2], addr[3], addr[4],
+                 verify_addr[0], verify_addr[1], verify_addr[2], verify_addr[3], verify_addr[4]);
+        return ESP_FAIL;
+    }
+    
+    ESP_LOGI(TAG, "TX address set and verified successfully: %02X-%02X-%02X-%02X-%02X",
+             addr[0], addr[1], addr[2], addr[3], addr[4]);
+    
+    return ESP_OK;
 }
 
 esp_err_t nrf24l01_set_rx_payload_width(nrf24l01_t *dev, uint8_t pipe, uint8_t width) {
@@ -283,7 +320,11 @@ esp_err_t nrf24l01_enable_dyn_payload(nrf24l01_t *dev, uint8_t pipe, bool enable
     uint8_t feature;
     esp_err_t ret = nrf24l01_read_register(dev, NRF24_REG_FEATURE, &feature);
     if (ret != ESP_OK) return ret;
-    feature |= (1<<2); // EN_DPL
+    if (enable) {
+        feature |= (1<<2); // EN_DPL
+    } else {
+        feature &= ~(1<<2); // Clear EN_DPL
+    }
     ret = nrf24l01_write_register(dev, NRF24_REG_FEATURE, feature);
     if (ret != ESP_OK) return ret;
 
@@ -302,11 +343,15 @@ esp_err_t nrf24l01_set_rx_mode(nrf24l01_t *dev) {
     uint8_t config;
     esp_err_t ret = nrf24l01_read_register(dev, NRF24_REG_CONFIG, &config);
     if (ret != ESP_OK) return ret;
-    config |= NRF24_CONFIG_PRIM_RX | NRF24_CONFIG_PWR_UP;
+    
+    // 设置接收模式：使能PRIM_RX和PWR_UP，确保CRC使能
+    config |= NRF24_CONFIG_PRIM_RX | NRF24_CONFIG_PWR_UP | NRF24_CONFIG_EN_CRC;
+    
     ret = nrf24l01_write_register(dev, NRF24_REG_CONFIG, config);
     if (ret != ESP_OK) return ret;
+    
     nrf24l01_ce_high(dev); // 开始监听
-    vTaskDelay(pdMS_TO_TICKS(1)); // 稳定时间
+    vTaskDelay(pdMS_TO_TICKS(2)); // 稳定时间，至少1.3ms
     return ESP_OK;
 }
 
@@ -314,35 +359,47 @@ esp_err_t nrf24l01_set_tx_mode(nrf24l01_t *dev) {
     uint8_t config;
     esp_err_t ret = nrf24l01_read_register(dev, NRF24_REG_CONFIG, &config);
     if (ret != ESP_OK) return ret;
+    
+    // 设置发送模式：清零PRIM_RX，保持PWR_UP和CRC使能
     config &= ~NRF24_CONFIG_PRIM_RX;
-    config |= NRF24_CONFIG_PWR_UP;
+    config |= NRF24_CONFIG_PWR_UP | NRF24_CONFIG_EN_CRC;
+    
     ret = nrf24l01_write_register(dev, NRF24_REG_CONFIG, config);
     if (ret != ESP_OK) return ret;
+    
     nrf24l01_ce_low(dev); // 确保CE低，准备发送
+    vTaskDelay(pdMS_TO_TICKS(1)); // 稳定时间
     return ESP_OK;
 }
 
 esp_err_t nrf24l01_send(nrf24l01_t *dev, const uint8_t *data, size_t len, int timeout_ms) {
     if (len == 0 || len > NRF24_MAX_PAYLOAD) return ESP_ERR_INVALID_ARG;
 
-    // 确保处于发送模式（PRIM_RX=0, PWR_UP=1）
+    // 确保处于发送模式
     uint8_t config;
     esp_err_t ret = nrf24l01_read_register(dev, NRF24_REG_CONFIG, &config);
     if (ret != ESP_OK) return ret;
+    
     if (config & NRF24_CONFIG_PRIM_RX) {
         // 当前为接收模式，需切换到发送模式
         ret = nrf24l01_set_tx_mode(dev);
         if (ret != ESP_OK) return ret;
     }
 
-    // 清空TX FIFO（可选，但为了可靠）
+    // 清除中断标志
+    nrf24l01_clear_irq(dev, NRF24_STATUS_TX_DS | NRF24_STATUS_MAX_RT);
+
+    // 清空TX FIFO
     nrf24l01_write_cmd(dev, NRF24_CMD_FLUSH_TX);
 
     // 写入发送载荷
     ret = nrf24l01_write_cmd_with_data(dev, NRF24_CMD_W_TX_PAYLOAD, data, len);
-    if (ret != ESP_OK) return ret;
+    if (ret != ESP_OK) {
+        ESP_LOGE(TAG, "Failed to write payload, error: 0x%x", ret);
+        return ret;
+    }
 
-    // 触发发送：CE高 >10us
+    // 触发发送：CE拉高 >10us
     nrf24l01_ce_high(dev);
     esp_rom_delay_us(15); // 至少10us
     nrf24l01_ce_low(dev);
@@ -352,11 +409,14 @@ esp_err_t nrf24l01_send(nrf24l01_t *dev, const uint8_t *data, size_t len, int ti
     uint8_t status;
     while (1) {
         status = nrf24l01_get_status(dev);
+        
+        // 检查发送完成或最大重传次数到达
         if (status & (NRF24_STATUS_TX_DS | NRF24_STATUS_MAX_RT)) {
             break;
         }
+        
         if ((xTaskGetTickCount() - start) >= pdMS_TO_TICKS(timeout_ms)) {
-            ESP_LOGW(TAG, "Send timeout");
+            ESP_LOGW(TAG, "Send timeout, current status: 0x%02x", status);
             return ESP_ERR_TIMEOUT;
         }
         vTaskDelay(pdMS_TO_TICKS(1));
@@ -366,8 +426,12 @@ esp_err_t nrf24l01_send(nrf24l01_t *dev, const uint8_t *data, size_t len, int ti
     nrf24l01_clear_irq(dev, status & (NRF24_STATUS_TX_DS | NRF24_STATUS_MAX_RT));
 
     if (status & NRF24_STATUS_MAX_RT) {
-        ESP_LOGW(TAG, "Max retries exceeded");
+        ESP_LOGW(TAG, "Max retries exceeded, status: 0x%02x", status);
         return ESP_FAIL; // 重传超时
+    }
+
+    if (status & NRF24_STATUS_TX_DS) {
+        ESP_LOGI(TAG, "Send successful, status: 0x%02x", status);
     }
 
     return ESP_OK;
@@ -389,29 +453,15 @@ esp_err_t nrf24l01_receive(nrf24l01_t *dev, uint8_t *data, size_t *len, uint8_t 
         return ESP_ERR_NOT_FOUND;
     }
 
-    // 读取有效载荷长度（如果动态载荷使能）
-    uint8_t payload_len = NRF24_MAX_PAYLOAD;
-    // 检查FEATURE.EN_DPL是否使能
-    uint8_t feature;
-    esp_err_t ret = nrf24l01_read_register(dev, NRF24_REG_FEATURE, &feature);
-    if (ret == ESP_OK && (feature & (1<<2))) {
-        // 动态载荷使能，使用R_RX_PL_WID读取长度
-        uint8_t cmd = NRF24_CMD_R_RX_PL_WID;
-        uint8_t rx_len[2];
-        spi_transaction_t t = {
-            .length = 2 * 8,
-            .tx_buffer = &cmd,
-            .rx_buffer = rx_len,
-        };
-        ret = spi_device_transmit(dev->spi, &t);
+    // 确定有效载荷长度
+    uint8_t payload_len = 32; // 默认最大长度
+    uint8_t pipe_num = (nrf24l01_get_status(dev) & NRF24_STATUS_RX_P_NO) >> 1;
+    
+    if (pipe_num <= 5) {
+        uint8_t width_reg;
+        esp_err_t ret = nrf24l01_read_register(dev, NRF24_REG_RX_PW_P0 + pipe_num, &width_reg);
         if (ret == ESP_OK) {
-            payload_len = rx_len[1];
-            if (payload_len > NRF24_MAX_PAYLOAD) {
-                ESP_LOGE(TAG, "Invalid payload length %d", payload_len);
-                // 清空无效载荷
-                nrf24l01_write_cmd(dev, NRF24_CMD_FLUSH_RX);
-                return ESP_FAIL;
-            }
+            payload_len = width_reg > 32 ? 32 : width_reg;
         }
     }
 
@@ -431,7 +481,7 @@ esp_err_t nrf24l01_receive(nrf24l01_t *dev, uint8_t *data, size_t *len, uint8_t 
         .tx_buffer = tx_buf,
         .rx_buffer = rx_buf,
     };
-    ret = spi_device_transmit(dev->spi, &t);
+    esp_err_t ret = spi_device_transmit(dev->spi, &t);
     if (ret == ESP_OK) {
         memcpy(data, rx_buf + 1, payload_len);
         *len = payload_len;
@@ -446,20 +496,32 @@ esp_err_t nrf24l01_receive(nrf24l01_t *dev, uint8_t *data, size_t *len, uint8_t 
 
 uint8_t nrf24l01_get_status(nrf24l01_t *dev) {
     uint8_t cmd = NRF24_CMD_NOP;
-    uint8_t status;
+    uint8_t rx_data = 0;  // 申请2字节以防止溢出
     spi_transaction_t t = {
         .length = 8,
         .tx_buffer = &cmd,
-        .rx_buffer = &status,
+        .rx_buffer = &rx_data,
+        .flags = SPI_TRANS_USE_RXDATA,
     };
-    spi_device_transmit(dev->spi, &t);
-    return status;
+    
+    esp_err_t ret = spi_device_transmit(dev->spi, &t);
+    if (ret == ESP_OK) {
+        return rx_data;  // 返回接收到的状态字节
+    } else {
+        ESP_LOGE(TAG, "Failed to get status, error: 0x%x", ret);
+        return 0xFF;  // 返回错误状态
+    }
 }
 
 void nrf24l01_clear_irq(nrf24l01_t *dev, uint8_t flags) {
-    uint8_t status = nrf24l01_get_status(dev);
-    // 写1清除对应位
-    nrf24l01_write_register(dev, NRF24_REG_STATUS, status | flags);
+    uint8_t status;
+    esp_err_t ret = nrf24l01_read_register(dev, NRF24_REG_STATUS, &status);
+    if (ret == ESP_OK) {
+        // 写1清除对应位
+        nrf24l01_write_register(dev, NRF24_REG_STATUS, status | flags);
+    } else {
+        ESP_LOGE(TAG, "Failed to clear IRQ, error: 0x%x", ret);
+    }
 }
 
 esp_err_t nrf24l01_power_up(nrf24l01_t *dev) {

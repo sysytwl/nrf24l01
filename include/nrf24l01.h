@@ -161,8 +161,7 @@ typedef struct {
  * @param irq_pin IRQ引脚（可设为-1不使用）
  * @return esp_err_t
  */
-esp_err_t nrf24l01_init(nrf24l01_t *dev, spi_host_device_t host, int clk_speed,
-                        gpio_num_t cs_pin, gpio_num_t ce_pin, gpio_num_t irq_pin);
+esp_err_t nrf24l01_init(nrf24l01_t *dev, gpio_num_t ce_pin, gpio_num_t irq_pin);
 
 /**
  * @brief 设置RF通道
