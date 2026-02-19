@@ -11,7 +11,7 @@
 #define PIN_IRQ          GPIO_NUM_NC  // 不使用可设为-1
 
 // 地址示例（5字节，LSB先发送）
-static const uint8_t tx_addr[5] = {0x00, 0x00, 0x00, 0x00, 0x01};
+static const uint8_t tx_addr[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
 static const uint8_t rx_addr[5] = {0xE7, 0xE7, 0xE7, 0xE7, 0xE7};
 
 nrf24l01_t nrf;
