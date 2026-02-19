@@ -401,8 +401,6 @@ esp_err_t nrf24l01_send(nrf24l01_t *dev, const uint8_t *data, size_t len, int ti
 
     // 触发发送：CE拉高 >10us
     nrf24l01_ce_high(dev);
-    esp_rom_delay_us(15); // 至少10us
-    nrf24l01_ce_low(dev);
 
     // 等待发送完成或超时
     TickType_t start = xTaskGetTickCount();
@@ -421,6 +419,7 @@ esp_err_t nrf24l01_send(nrf24l01_t *dev, const uint8_t *data, size_t len, int ti
         }
         vTaskDelay(pdMS_TO_TICKS(1));
     }
+    nrf24l01_ce_low(dev);
 
     // 清除中断标志
     nrf24l01_clear_irq(dev, status & (NRF24_STATUS_TX_DS | NRF24_STATUS_MAX_RT));

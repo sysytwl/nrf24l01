@@ -67,17 +67,12 @@ void nrf_tx(uint8_t *data){
     uint8_t send_data[32];
     strcpy((char*)send_data, "Hello nRF24L01+!");
     
-    esp_err_t ret = nrf24l01_send(&nrf, send_data, strlen((char*)send_data) + 1, 2000);
-    if (ret == ESP_OK) {
-        ESP_LOGI("nrf_tx", "Send OK");
-    } else {
-        ESP_LOGE("nrf_tx", "Send failed, error: 0x%x", ret);
-        
-        // 检查状态寄存器
-        uint8_t status = nrf24l01_get_status(&nrf);
-        ESP_LOGI("nrf_tx", "Status register after send: 0x%02x", status);
-        
+    esp_err_t ret;
+    do {
+        ret = nrf24l01_send(&nrf, send_data, strlen((char*)send_data) + 1, 2000);
+
         // 清除中断标志
-        nrf24l01_clear_irq(&nrf, 0xFF);
-    }
+        //nrf24l01_clear_irq(&nrf, 0xFF);
+    } while (ret != ESP_OK);
+
 }
