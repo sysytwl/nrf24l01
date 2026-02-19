@@ -1,4 +1,10 @@
-# lib/nrf24l01/CMakeLists.txt
-idf_component_register(SRCS "./src/nrf24l01.c"
-                    INCLUDE_DIRS "include"
-                    REQUIRES driver freertos esp_rom log)
+file(GLOB srcs
+    "src/*.c"
+    "src/*.cpp"
+)
+
+idf_component_register(
+    SRCS ${srcs}
+    INCLUDE_DIRS "./include"
+    PRIV_REQUIRES driver esp_timer
+)
