@@ -451,11 +451,12 @@ bool nrf24l01_data_ready(nrf24l01_t *dev, uint8_t *pipe) {
 }
 
 esp_err_t nrf24l01_receive(nrf24l01_t *dev, uint8_t *data, size_t *len, uint8_t *pipe) {
-    nrf24l01_read_register(dev, NRF24_REG_RX_PW_P0 + *pipe, (uint8_t*)len);
+    esp_err_t err = nrf24l01_read_register(dev, NRF24_REG_RX_PW_P0 + *pipe, (uint8_t*)len);
+    if(err != ESP_OK) ESP_LOGE(TAG, "read length of rx payload error");
 
     // 读取载荷
     uint8_t cmd = NRF24_CMD_R_RX_PAYLOAD;
-    esp_err_t ret = nrf24l01_read_register_multi(dev, cmd, data, *len);
+    esp_err_t ret = nrf24l01_read_register_multi(dev, cmd, data, 32);
 
     // 清除RX_DR中断
     nrf24l01_clear_irq(dev, NRF24_STATUS_RX_DR);
